@@ -1,0 +1,40 @@
+C:\Users\DannyWalker\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts
+
+
+set PATH=%PATH%;C:\Users\DannyWalker\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts
+
+
+C:\temp\deleteAgents>where pip
+C:\Users\DannyWalker\AppData\Local\Microsoft\WindowsApps\pip.exe
+C:\Users\DannyWalker\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts\pip.exe
+
+C:\temp\deleteAgents>
+
+
+
+do this to your workstation
+
+Option 2 — Permanent (Environment Variables GUI)
+
+Press Windows key + R, type
+
+sysdm.cpl
+
+
+and hit Enter.
+
+Go to Advanced → Environment Variables.
+
+Under User variables for DannyWalker, find and select Path, then click Edit.
+
+Click New, paste:
+
+C:\Users\DannyWalker\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts
+
+
+Click OK three times to close all dialogs.
+
+Open a new Command Prompt and test:
+
+where pip
+pip --version
