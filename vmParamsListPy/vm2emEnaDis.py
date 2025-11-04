@@ -17,7 +17,7 @@ WEBEX_ORG_ID = "ebc31646-bc26-4a20-8500-c3030ebd6a52"
 TOKEN= WEBEX_TOKEN
 ORG_ID = WEBEX_ORG_ID
 
-CSV_PATH_DEFAULT = "email2personID.csv"
+CSV_PATH_DEFAULT = "../email2personID.csv"
 
 # ----- HTTP helpers -----
 def _hdrs():
