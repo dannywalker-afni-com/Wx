@@ -5,10 +5,10 @@ import requests
 
 # ----- Environment setup -----
 BASE = os.getenv("WEBEX_BASE", "https://webexapis.com")
-# TOKEN = os.getenv("WEBEX_TOKEN")  # Set this before running
-# ORG_ID = os.getenv("WEBEX_ORG_ID")
-TOKEN = "MTkxZDZjODctODA5My00ZWZmLThlZmUtMzNjZDkzM2I5NjkxMGVmYTg0MjAtYzRm_PF84_ebc31646-bc26-4a20-8500-c3030ebd6a52"
-ORG_ID = "ebc31646-bc26-4a20-8500-c3030ebd6a52"
+TOKEN = os.getenv("WEBEX_TOKEN")  # Set this before running
+ORG_ID = os.getenv("WEBEX_ORG_ID")
+# TOKEN = "MTkxZDZjODctODA5My00ZWZmLThlZmUtMzNjZDkzM2I5NjkxMGVmYTg0MjAtYzRm_PF84_ebc31646-bc26-4a20-8500-c3030ebd6a52"
+# ORG_ID = "ebc31646-bc26-4a20-8500-c3030ebd6a52"
 
 if not TOKEN:
     sys.exit("ERROR: Set the WEBEX_TOKEN environment variable to a valid admin token.")
@@ -33,7 +33,7 @@ def get_voicemail_for_person(person_id: str):
 
 # ----- Main workflow -----
 def main():
-    input_csv = "email2personID.csv"
+    input_csv = "../email2personID.csv"
     output_csv = "userVoicemailParameters.csv"
 
     if not os.path.exists(input_csv):
