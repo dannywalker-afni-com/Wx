@@ -11,8 +11,8 @@ BASE = os.getenv("WEBEX_BASE", "https://webexapis.com")     # FedRAMP: https://a
 
 # WEBEX_TOKEN = "Mjc0ZTg2MDQtMmYyNy00ZDUyLWFmZTUtZTExY2UzNGUzM2RmNjEyOWU2ODYtMTVm_PF84_ebc31646-bc26-4a20-8500-c3030ebd6a52"
 # WEBEX_ORG_ID = "ebc31646-bc26-4a20-8500-c3030ebd6a52"
-TOKEN = os.getenv(WEBEX_TOKEN).strip()                            # REQUIRED: admin token with people_read/write scopes
-ORG_ID = os.getenv(WEBEX_ORG_ID).strip()                          # optional (partner admins)
+TOKEN = os.getenv("WEBEX_TOKEN").strip()                            # REQUIRED: admin token with people_read/write scopes
+ORG_ID = os.getenv("WEBEX_ORG_ID").strip()                          # optional (partner admins)
 
 CSV_PATH_DEFAULT = "../email2personID.csv"
 
