@@ -6,13 +6,26 @@ import time
 
 def update_person_ids():
     
-    # Bearer URL https://developer.webex.com/calling/docs/getting-started
     
-   # bearer_token = getpass.getpass("Enter your Webex Bearer Token: ")
-   
-    bearer_token = "MTkxZDZjODctODA5My00ZWZmLThlZmUtMzNjZDkzM2I5NjkxMGVmYTg0MjAtYzRm_PF84_ebc31646-bc26-4a20-8500-c3030ebd6a52"
+    # ----- Environment setup -----
+    # base_url = "https://webexapis.com/v1/people"
+    BASE = os.getenv("WEBEX_BASE", "https://webexapis.com/v1/people")
 
-    base_url = "https://webexapis.com/v1/people"
+    # TOKEN = "MTkxZDZjODctODA5My00ZWZmLThlZmUtMzNjZDkzM2I5NjkxMGVmYTg0MjAtYzRm_PF84_ebc31646-bc26-4a20-8500-c3030ebd6a52"    
+    TOKEN = os.getenv("WEBEX_TOKEN").strip()  # Set this before running
+    
+    #     ORG_ID = "ebc31646-bc26-4a20-8500-c3030ebd6a52"
+    ORG_ID = os.getenv("WEBEX_ORG_ID").strip()
+
+
+
+    # Bearer URL https://developer.webex.com/calling/docs/getting-started use this URL to validate the TOKEN and ORG_ID
+    # use sec WEBEX from CMD 
+    
+    
+    bearer_token = TOKEN
+   
+    base_url = BASE
 
     csv_file = os.path.join(os.path.dirname(__file__), "email2personID.csv")
 
