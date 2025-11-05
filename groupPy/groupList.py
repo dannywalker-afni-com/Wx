@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-Reads group names from groupName.csv (column: groupName) and exports:
+Reads group names from groupName.csv (header: groupName)
+Matches them against Webex 'Webex groups' (NOT SCIM) and exports:
   - groups.csv
   - group_members.csv
-  - group_assignments.csv (stub note: not exposed by public API)
+  - group_assignments.csv (stub; not exposed by API)
 
-Tries SCIM search first (identity/scim/{orgId}/v2/Groups), then falls back to /v1/groups.
-Members are read via /v1/groups/{groupId}/members.
+ENV:
+  WEBEX_TOKEN     admin token with identity:groups_read
+  WEBEX_ORG_ID    (optional but recommended)
+  WEBEX_BASE      default https://webexapis.com  (FedRAMP: https://api-usgov.webex.com)
 """
 
-import os, sys, csv, time, requests
+import os, sys, csv, time, re, requests
 from typing import Dict, Any, Iterable, List, Optional
 
 BASE = os.getenv("WEBEX_BASE", "https://webexapis.com").rstrip("/")
@@ -17,13 +20,13 @@ TOKEN = (os.getenv("WEBEX_TOKEN") or "").strip()
 ORG_ID = (os.getenv("WEBEX_ORG_ID") or "").strip()
 TIMEOUT = 30
 
-OUT_GROUPS = "groups.csv"
-OUT_MEMBERS = "group_members.csv"
-OUT_ASSIGN = "group_assignments.csv"
+OUT_GROUPS   = "groups.csv"
+OUT_MEMBERS  = "group_members.csv"
+OUT_ASSIGN   = "group_assignments.csv"
 
 def hdrs() -> Dict[str, str]:
     if not TOKEN:
-        sys.exit("ERROR: set WEBEX_TOKEN to an admin token (identity:people_read or identity:groups_read).")
+        sys.exit("ERROR: set WEBEX_TOKEN to an admin token with identity:groups_read.")
     return {"Authorization": f"Bearer {TOKEN}"}
 
 def _get(url: str, params: Dict[str, Any] | None = None) -> requests.Response:
@@ -32,161 +35,140 @@ def _get(url: str, params: Dict[str, Any] | None = None) -> requests.Response:
         r = requests.get(url, headers=hdrs(), params=params or {}, timeout=TIMEOUT)
         if r.status_code in (429, 502, 503, 504):
             sleep_for = float(r.headers.get("Retry-After", backoff))
-            time.sleep(min(sleep_for, 10.0))
-            backoff *= 1.6
+            time.sleep(min(sleep_for, 10.0)); backoff *= 1.6
             continue
         return r
     return r
 
 def paginate(url: str, params: Dict[str, Any] | None = None) -> Iterable[Dict[str, Any]]:
-    """Follow RFC5988 Link headers."""
     while True:
         r = _get(url, params)
+        if r.status_code == 401:
+            sys.exit("401 Unauthorized. Check WEBEX_TOKEN and scopes (need identity:groups_read).")
+        if r.status_code == 403:
+            sys.exit("403 Forbidden. Token likely lacks identity:groups_read, or wrong org/region.")
         r.raise_for_status()
         data = r.json()
-        items = data.get("items") or data.get("results") or data.get("Resources") or []
+        items = data.get("items") or []
         for it in items:
             yield it
         link = r.headers.get("Link", "")
         next_url = None
         for part in link.split(","):
             if 'rel="next"' in part:
-                start = part.find("<") + 1
-                end = part.find(">")
-                next_url = part[start:end]
-                break
-        if not next_url:
-            break
+                start = part.find("<") + 1; end = part.find(">")
+                next_url = part[start:end]; break
+        if not next_url: break
         url, params = next_url, None
 
-# ---------- LOOKUPS ----------
-def scim_find_group_by_name(name: str) -> Optional[Dict[str, Any]]:
-    """
-    SCIM search by displayName (identity/scim/{orgId}/v2/Groups).
-    Returns raw SCIM group dict or None.
-    """
-    if not ORG_ID:
-        return None
-    url = f"{BASE}/v1/identity/scim/{ORG_ID}/v2/Groups"
-    # SCIM filter: displayName eq "Name"
-    params = {"filter": f'displayName eq "{name}"', "count": 100}
-    r = _get(url, params)
-    if r.status_code == 200:
-        data = r.json()
-        resources = data.get("Resources") or []
-        # Case-insensitive match, favor exact
-        for g in resources:
-            if (g.get("displayName") or "").lower() == name.lower():
-                return g
-    return None
-
-def groups_list_all() -> Iterable[Dict[str, Any]]:
-    """Fallback: list /v1/groups (Webex Groups API)."""
+# ----------------- Webex Groups -----------------
+def list_all_groups() -> List[Dict[str, Any]]:
     url = f"{BASE}/v1/groups"
     params = {"max": 500}
-    if ORG_ID:
-        params["orgId"] = ORG_ID
-    yield from paginate(url, params)
-
-def groups_find_by_name(name: str) -> Optional[Dict[str, Any]]:
-    """Fallback search in /v1/groups by iterating and matching displayName."""
-    for g in groups_list_all():
-        if (g.get("displayName") or "").lower() == name.lower():
-            return g
-    return None
-
-def get_group_members(group_id: str) -> List[Dict[str, Any]]:
-    """Use /v1/groups/{groupId}/members."""
-    url = f"{BASE}/v1/groups/{group_id}/members"
-    params = {"max": 500}
-    if ORG_ID:
-        params["orgId"] = ORG_ID
+    if ORG_ID: params["orgId"] = ORG_ID
     return list(paginate(url, params))
 
-# ---------- NORMALIZATION ----------
-def normalize_group(g: Dict[str, Any]) -> Dict[str, Any]:
-    # Handle both SCIM and /v1 groups shapes
-    if "id" in g and "displayName" in g:
-        return {
-            "groupId": g.get("id", ""),
-            "name": g.get("displayName") or g.get("name") or "",
-            "description": g.get("description") or "",
-            "source": g.get("source") or "",             # only on /v1 sometimes
-            "lastModified": g.get("lastModified") or g.get("modified") or g.get("meta", {}).get("lastModified", ""),
-            "usage": g.get("usage") or ""
-        }
-    # SCIM often uses "id"/"displayName"/"meta"
-    return {
-        "groupId": g.get("id", ""),
-        "name": g.get("displayName") or "",
-        "description": g.get("description") or "",
-        "source": "",  # not in SCIM
-        "lastModified": g.get("meta", {}).get("lastModified", ""),
-        "usage": ""
-    }
+def get_group_members(group_id: str) -> List[Dict[str, Any]]:
+    url = f"{BASE}/v1/groups/{group_id}/members"
+    params = {"max": 500}
+    if ORG_ID: params["orgId"] = ORG_ID
+    return list(paginate(url, params))
+
+# ----------------- Helpers -----------------
+_ws_re = re.compile(r"\s+")
+
+def norm(s: str) -> str:
+    """Casefold, trim, collapse whitespace."""
+    return _ws_re.sub(" ", (s or "").strip()).casefold()
 
 def normalize_member(m: Dict[str, Any]) -> Dict[str, Any]:
     pid = m.get("personId") or m.get("id") or ""
     dname = m.get("displayName") or m.get("name") or ""
     emails = m.get("emails") or m.get("email") or []
-    if isinstance(emails, list):
-        email = emails[0] if emails else ""
-    else:
-        email = emails or ""
+    email = (emails[0] if isinstance(emails, list) and emails else (emails or ""))
     return {"personId": pid, "displayName": dname, "email": email}
 
-# ---------- MAIN ----------
 def main():
+    # Read requested names
     if not os.path.exists("groupName.csv"):
-        sys.exit("Missing input file: groupName.csv (must contain column 'groupName').")
-
+        sys.exit("Missing input file: groupName.csv (must have a 'groupName' header).")
     with open("groupName.csv", newline="", encoding="utf-8-sig") as f:
         r = csv.DictReader(f)
         if not r.fieldnames or "groupName" not in r.fieldnames:
-            sys.exit("groupName.csv must have a 'groupName' header.")
-        names = [row["groupName"].strip() for row in r if row.get("groupName")]
+            sys.exit("groupName.csv must contain header 'groupName'.")
+        target_names = [row["groupName"].strip() for row in r if row.get("groupName")]
 
-    if not names:
-        sys.exit("No group names found in groupName.csv.")
+    # Dump all groups once
+    print("ℹ️  Fetching all Webex groups via /v1/groups ...")
+    all_groups = list_all_groups()
+    print(f"ℹ️  API returned {len(all_groups)} groups.")
+
+    if len(all_groups) == 0:
+        print("\nNo groups returned. Check the following:\n"
+              "  • Token has scope identity:groups_read (service app / admin integration)\n"
+              "  • WEBEX_ORG_ID is set to your org (especially if you are a partner admin)\n"
+              "  • WEBEX_BASE matches your region (commercial vs FedRAMP)\n"
+              "  • You’re not mixing Bot tokens (Bots do NOT support groups APIs)\n")
+        sys.exit(1)
+
+    # Build name index
+    by_norm_name: Dict[str, Dict[str, Any]] = {}
+    for g in all_groups:
+        disp = g.get("displayName") or g.get("name") or ""
+        by_norm_name[norm(disp)] = g
 
     groups_out, members_out, assign_out = [], [], []
+    not_found: List[str] = []
 
-    for name in names:
-        print(f"🔍 Looking up group: {name}")
+    for raw_name in target_names:
+        print(f"🔍 Looking up group: {raw_name}")
+        wanted = norm(raw_name)
 
-        # 1) Try SCIM search (needs ORG_ID + identity:people_read/_rw)
-        g = scim_find_group_by_name(name)
-
-        # 2) Fallback to /v1/groups list + match (needs identity:groups_read)
+        g = by_norm_name.get(wanted)
         if not g:
-            g = groups_find_by_name(name)
+            # try relaxed contains match
+            candidates = [gg for k, gg in by_norm_name.items() if wanted in k]
+            g = candidates[0] if candidates else None
 
         if not g:
-            print(f"❌ Group not found via SCIM or /v1: {name}")
+            print(f"❌ Not found in /v1/groups: {raw_name}")
+            not_found.append(raw_name)
             continue
 
-        norm = normalize_group(g)
-        gid = norm["groupId"]
-        groups_out.append({**norm})
+        gid = g.get("id", "")
+        name = g.get("displayName") or g.get("name") or ""
+        desc = g.get("description") or ""
+        src  = g.get("source") or ""  # often 'local' for Webex groups
+        last = g.get("lastModified") or g.get("modified") or ""
+        usage = g.get("usage") or ""
 
-        # Members via /v1/groups/{id}/members
+        # members
         try:
             ms = get_group_members(gid)
         except requests.HTTPError as e:
             print(f"⚠️ Members fetch failed for {name}: {e}")
             ms = []
 
+        groups_out.append({
+            "groupId": gid,
+            "name": name,
+            "description": desc,
+            "source": src,
+            "lastModified": last,
+            "memberCount": len(ms),
+            "usage": usage
+        })
+
         for m in ms:
             members_out.append({
                 "groupId": gid,
-                "groupName": norm["name"],
+                "groupName": name,
                 **normalize_member(m)
             })
 
-        # Assignments: still not exposed publicly
         assign_out.append({
             "groupId": gid,
-            "groupName": norm["name"],
+            "groupName": name,
             "assignments": "NOT EXPOSED BY PUBLIC API (use Control Hub UI)"
         })
 
@@ -194,13 +176,9 @@ def main():
 
     # Write CSVs
     with open(OUT_GROUPS, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["groupId","name","description","source","lastModified","memberCount","usage"])
-        # compute memberCount
-        counts = {}
-        for m in members_out:
-            counts[m["groupId"]] = counts.get(m["groupId"], 0) + 1
-        for row in groups_out:
-            row["memberCount"] = counts.get(row["groupId"], 0)
+        w = csv.DictWriter(f, fieldnames=[
+            "groupId","name","description","source","lastModified","memberCount","usage"
+        ])
         w.writeheader(); w.writerows(groups_out)
 
     with open(OUT_MEMBERS, "w", newline="", encoding="utf-8") as f:
@@ -211,10 +189,14 @@ def main():
         w = csv.DictWriter(f, fieldnames=["groupId","groupName","assignments"])
         w.writeheader(); w.writerows(assign_out)
 
-    print(f"✅ Groups exported: {len(groups_out)} → {OUT_GROUPS}")
+    print(f"\n✅ Groups exported: {len(groups_out)} → {OUT_GROUPS}")
     print(f"✅ Members exported: {len(members_out)} → {OUT_MEMBERS}")
     print(f"✅ Assignments stub: {len(assign_out)} → {OUT_ASSIGN}")
 
+    if not_found:
+        print("\n⚠️ Names not found (after normalization):")
+        for n in not_found:
+            print("   -", n)
+
 if __name__ == "__main__":
     main()
-    
