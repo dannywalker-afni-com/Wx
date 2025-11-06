@@ -1,34 +1,45 @@
 #!/usr/bin/env python3
 """
-Process group_members.csv to add / update / delete Webex Group members.
+Bulk manage Webex Groups members from group_members.csv
 
 Input CSV columns (minimum):
   groupId,groupName,personId,displayName,email,action,newDisplayName,newEmail
 
-Rules:
-- Blank action  -> NO-OP: list the row info (console + log).
-- 'u'/'U'       -> Update user (display name/email; blank new* ignored).
-- 'a'/'A'       -> Add member.
-- 'd'/'D'       -> Delete member.
+Action rules:
+  - Blank action  -> NO-OP: list info (console + log).
+  - 'u'/'U'       -> Update user (display name/email; blank new* ignored).
+  - 'a'/'A'       -> Add member to group.
+  - 'd'/'D'       -> Delete member from group.
 
 ENV:
-  WEBEX_TOKEN   = admin OAuth token (identity:groups_read, identity:groups_write,
-                                     spark-admin:people_read, spark-admin:people_write)
+  WEBEX_TOKEN   = admin OAuth token
+                  (identity:groups_read, identity:groups_write,
+                   spark-admin:people_read, spark-admin:people_write)
   WEBEX_ORG_ID  = (recommended) customer org id
   WEBEX_BASE    = https://webexapis.com   (FedRAMP: https://api-usgov.webex.com)
 """
 
-import os, sys, csv, time, json, requests
-from typing import Dict, Any, Optional, Tuple
+import os
+import sys
+import csv
+import time
+import json
+import traceback
+import requests
+from typing import Dict, Any, Optional, Tuple, List
 
-BASE   = os.getenv("WEBEX_BASE", "https://webexapis.com").rstrip("/")
-TOKEN  = (os.getenv("WEBEX_TOKEN") or "").strip()
-ORG_ID = (os.getenv("WEBEX_ORG_ID") or "").strip()
+# -------------------- Config --------------------
+BASE    = os.getenv("WEBEX_BASE", "https://webexapis.com").rstrip("/")
+TOKEN   = (os.getenv("WEBEX_TOKEN") or "").strip()
+ORG_ID  = (os.getenv("WEBEX_ORG_ID") or "").strip()
 TIMEOUT = 30
-LOG_CSV = "group_ops_log.csv"
 
+INPUT_CSV = "group_members.csv"
+LOG_CSV   = "groupMemberACDLog.csv"
+
+# -------------- HTTP helpers / retry ------------
 def die(msg: str) -> None:
-    print(f"ERROR: {msg}")
+    print(f"ERROR: {msg}", flush=True)
     sys.exit(1)
 
 def hdrs(json_ct: bool = True) -> Dict[str, str]:
@@ -51,11 +62,20 @@ def backoff_request(method: str, url: str, **kwargs) -> requests.Response:
         return r
     return r
 
-# ---------- People helpers ----------
+# -------------- People helpers ------------------
+_PERSON_EMAIL_CACHE: Dict[str, str] = {}
+
 def resolve_person(person_id: Optional[str], email: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """Return (personId, email). If personId missing but email provided, look it up."""
+    """
+    Return (personId, email). If personId missing but email present, lookup by email.
+    If email missing but personId present, later fill from cache/people/{id}.
+    """
     if person_id:
+        # Ensure we have email if needed later
+        if not email:
+            email = get_email_for_person(person_id)
         return (person_id, email)
+
     if not email:
         return (None, None)
 
@@ -68,8 +88,29 @@ def resolve_person(person_id: Optional[str], email: Optional[str]) -> Tuple[Opti
         if data:
             pid = data[0].get("id")
             ems = data[0].get("emails") or []
-            return (pid, (ems[0] if ems else email))
+            found_email = ems[0] if ems else email
+            _PERSON_EMAIL_CACHE[pid] = found_email
+            return (pid, found_email)
     return (None, email)
+
+def get_email_for_person(person_id: str) -> str:
+    if not person_id:
+        return ""
+    if person_id in _PERSON_EMAIL_CACHE:
+        return _PERSON_EMAIL_CACHE[person_id]
+
+    params = {}
+    if ORG_ID:
+        params["orgId"] = ORG_ID
+    r = backoff_request("GET", f"{BASE}/v1/people/{person_id}", headers=hdrs(False), params=params)
+    if r.status_code == 200:
+        data = r.json()
+        emails = data.get("emails") or []
+        email = emails[0] if emails else ""
+        if email:
+            _PERSON_EMAIL_CACHE[person_id] = email
+        return email
+    return ""
 
 def update_person(person_id: str, new_display: Optional[str], new_email: Optional[str]) -> Tuple[bool, str]:
     """Update displayName and/or email via People API. Ignores blanks."""
@@ -87,6 +128,9 @@ def update_person(person_id: str, new_display: Optional[str], new_email: Optiona
 
     r = backoff_request("PUT", f"{BASE}/v1/people/{person_id}", headers=hdrs(), data=json.dumps(body))
     if r.status_code in (200, 204):
+        # refresh cache if email changed
+        if new_email:
+            _PERSON_EMAIL_CACHE[person_id] = new_email
         return (True, "Updated user profile")
     try:
         err = r.json()
@@ -94,9 +138,9 @@ def update_person(person_id: str, new_display: Optional[str], new_email: Optiona
         err = r.text
     return (False, f"People update failed ({r.status_code}): {err}")
 
-# ---------- Group membership helpers ----------
+# ---------- Group membership helpers (Identity) ----------
 def is_member(group_id: str, person_id: str) -> bool:
-    params = {"itemsPerPage": 100, "startIndex": 1}
+    params = {"itemsPerPage": 200, "startIndex": 1}
     if ORG_ID:
         params["orgId"] = ORG_ID
     while True:
@@ -140,6 +184,7 @@ def delete_member(group_id: str, person_id: str) -> Tuple[bool, str]:
     if r.status_code in (200, 204):
         return (True, "Removed from group")
     if r.status_code == 404:
+        # If not actually a member, treat as no-op
         if not is_member(group_id, person_id):
             return (True, "Not a member (no-op)")
     try:
@@ -148,18 +193,32 @@ def delete_member(group_id: str, person_id: str) -> Tuple[bool, str]:
         err = r.text
     return (False, f"Delete failed ({r.status_code}): {err}")
 
-# ---------- Main ----------
-def main():
-    in_csv = "group_members.csv"
-    if not os.path.exists(in_csv):
-        die(f"Missing input file: {in_csv}")
+# -------------------- Core ----------------------
+def write_log(ops: List[Dict[str, Any]]) -> None:
+    try:
+        with open(LOG_CSV, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=[
+                "row","action","groupId","groupName","personId","email","result","detail"
+            ])
+            w.writeheader()
+            w.writerows(ops)
+        print(f"\n✅ Log written to {LOG_CSV}", flush=True)
+    except Exception as e:
+        print(f"ERROR writing log: {e}", flush=True)
+        traceback.print_exc()
 
-    ops = []
-    with open(in_csv, newline="", encoding="utf-8-sig") as f:
+def main() -> List[Dict[str, Any]]:
+    if not os.path.exists(INPUT_CSV):
+        die(f"Missing input file: {INPUT_CSV}")
+
+    print(f"Logging to: {LOG_CSV}", flush=True)
+
+    ops: List[Dict[str, Any]] = []
+    with open(INPUT_CSV, newline="", encoding="utf-8-sig") as f:
         r = csv.DictReader(f)
         rows = list(r)
 
-    print(f"🔧 Processing {len(rows)} rows from group_members.csv ...\n")
+    print(f"🔧 Processing {len(rows)} rows from {INPUT_CSV} ...\n", flush=True)
 
     for i, row in enumerate(rows, 1):
         group_id   = (row.get("groupId") or "").strip()
@@ -168,14 +227,14 @@ def main():
         display    = (row.get("displayName") or "").strip()
         email      = (row.get("email") or "").strip()
         action_raw = (row.get("action") or "").strip()
-        action     = action_raw[:1].lower() if action_raw else ""  # only first letter matters
+        action     = action_raw[:1].lower() if action_raw else ""  # A/D/U only if present
         new_disp   = (row.get("newDisplayName") or "").strip()
         new_email  = (row.get("newEmail") or "").strip()
 
-        # BLANK ACTION => NO-OP (list info only)
+        # Blank action => list info, no action
         if not action:
             msg = f"[{i}] 🔎 No action — {group_name or group_id} | {display or person_id} <{email}>"
-            print(msg)
+            print(msg, flush=True)
             ops.append({
                 "row": i, "action": "(none)", "groupId": group_id, "groupName": group_name,
                 "personId": person_id, "email": email, "result": "noop",
@@ -183,7 +242,84 @@ def main():
             })
             continue
 
-        # ADD / DELETE / UPDATE classification (first letter only)
+        # Validate action token
         if action not in ("a", "d", "u"):
-            print(f"[{i}] ⚠️  Invalid action '{action_raw}' — expected A/D/U or blank for no-op")
-            ops.append({"row": i, "action": action_raw_
+            print(f"[{i}] ⚠️  Invalid action '{action_raw}' — expected A/D/U or blank for no-op", flush=True)
+            ops.append({
+                "row": i, "action": action_raw, "groupId": group_id, "groupName": group_name,
+                "personId": person_id, "email": email, "result": "skip",
+                "detail": "invalid action (use A/D/U or blank)"
+            })
+            continue
+
+        # Resolve person if we will actually act (A/D/U)
+        pid, resolved_email = resolve_person(person_id, email)
+        person_id = pid or person_id
+        email     = resolved_email or email
+
+        if action in ("a", "d") and (not group_id or not person_id):
+            print(f"[{i}] ❌ {('Add' if action=='a' else 'Del')} requires groupId and personId/email", flush=True)
+            ops.append({
+                "row": i, "action": action_raw, "groupId": group_id, "groupName": group_name,
+                "personId": person_id, "email": email, "result": "error",
+                "detail": "groupId and personId/email required"
+            })
+            continue
+
+        if action == "a":
+            ok, detail = add_member(group_id, person_id)
+            status = "ok" if ok else "error"
+            print(f"[{i}] ➕ Add  | {group_name or group_id} ← {email or person_id}: {detail}", flush=True)
+
+        elif action == "d":
+            ok, detail = delete_member(group_id, person_id)
+            status = "ok" if ok else "error"
+            print(f"[{i}] ➖ Del  | {group_name or group_id} × {email or person_id}: {detail}", flush=True)
+
+        else:  # 'u'
+            if not person_id:
+                print(f"[{i}] ❌ Update requires personId or resolvable email", flush=True)
+                ops.append({
+                    "row": i, "action": action_raw, "groupId": group_id, "groupName": group_name,
+                    "personId": "", "email": email, "result": "error",
+                    "detail": "person not found"
+                })
+                continue
+            if not (new_disp or new_email):
+                print(f"[{i}] ⚠️  Update no-op (no newDisplayName/newEmail provided)", flush=True)
+                ops.append({
+                    "row": i, "action": action_raw, "groupId": group_id, "groupName": group_name,
+                    "personId": person_id, "email": email, "result": "skip", "detail": "no changes"
+                })
+                continue
+            ok, detail = update_person(person_id, new_disp or None, new_email or None)
+            status = "ok" if ok else "error"
+            print(f"[{i}] ✏️  Upd  | {email or person_id}: {detail}", flush=True)
+
+        ops.append({
+            "row": i, "action": action_raw, "groupId": group_id, "groupName": group_name,
+            "personId": person_id, "email": email, "result": status, "detail": detail
+        })
+
+        time.sleep(0.2)  # be nice to the API
+
+    print("\n✅ Processing complete.", flush=True)
+    return ops
+
+# ---------------- Entry point (guaranteed log) --------------
+if __name__ == "__main__":
+    all_ops: List[Dict[str, Any]] = []
+    try:
+        all_ops = main()
+    except SystemExit:
+        # die() already printed; still try to flush any ops if collected
+        pass
+    except Exception as e:
+        print("ERROR:", e, flush=True)
+        traceback.print_exc()
+    finally:
+        if isinstance(all_ops, list) and all_ops:
+            write_log(all_ops)
+        else:
+            # even if nothing happened, write an empty log with header for consistency
+            write_log([])
