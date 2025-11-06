@@ -24,6 +24,10 @@ OUT_GROUPS   = "groups.csv"
 OUT_MEMBERS  = "group_members.csv"
 OUT_ASSIGN   = "group_assignments.csv"
 
+# add near the top with other globals
+PERSON_EMAIL_CACHE: dict[str, str] = {}
+
+
 def hdrs() -> Dict[str, str]:
     if not TOKEN:
         sys.exit("ERROR: set WEBEX_TOKEN to an admin token with identity:groups_read.")
@@ -39,6 +43,32 @@ def _get(url: str, params: Dict[str, Any] | None = None) -> requests.Response:
             continue
         return r
     return r
+
+# helper for _get() function
+def get_email_for_person(person_id: str) -> str:
+    if not person_id:
+        return ""
+    if person_id in PERSON_EMAIL_CACHE:
+        return PERSON_EMAIL_CACHE[person_id]
+
+    url = f"{BASE}/v1/people/{person_id}"
+    params = {}
+    if ORG_ID:
+        params["orgId"] = ORG_ID
+
+    r = _get(url, params)
+    if r.status_code == 200:
+        try:
+            data = r.json()
+            emails = data.get("emails") or []
+            email = emails[0] if emails else ""
+            PERSON_EMAIL_CACHE[person_id] = email
+            return email
+        except Exception:
+            return ""
+    # don’t crash the export if one lookup fails
+    return ""
+
 
 def paginate(url: str, params: Dict[str, Any] | None = None) -> Iterable[Dict[str, Any]]:
     while True:
@@ -128,9 +158,15 @@ def norm(s: str) -> str:
 def normalize_member(m: Dict[str, Any]) -> Dict[str, Any]:
     pid = m.get("personId") or m.get("id") or ""
     dname = m.get("displayName") or m.get("name") or ""
+
+    # Try what the groups API returns; if empty, resolve via People API
     emails = m.get("emails") or m.get("email") or []
     email = (emails[0] if isinstance(emails, list) and emails else (emails or ""))
+    if not email and pid:
+        email = get_email_for_person(pid)
+
     return {"personId": pid, "displayName": dname, "email": email}
+
 
 def main():
     # Read requested names
