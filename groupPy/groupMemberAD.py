@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
 """
-Made these changes to branch dww202311070933
-dww202511071003 make changes
-
-
 Bulk manage Webex Groups members from group_members.csv
 
-Input CSV columns (minimum):
+CSV columns (minimum):
   groupId,groupName,personId,displayName,email,action
 
 Behavior:
   - Blank action  -> NO-OP: list info (console + log).
   - 'a'/'A'       -> Add member to group (PUT /v1/groups/{groupId}/members/{personId}).
   - 'd'/'D'       -> Delete member from group (DELETE /v1/groups/{groupId}/members/{personId}).
-  - Anything else -> Invalid action (logged as skip) — no 'U' support.
+  - Anything else -> Invalid action (logged as skip).
 
 ENV (required):
-  WEBEX_TOKEN   = admin OAuth token
-                  (identity:groups_read, identity:groups_write, spark-admin:people_read)
-  WEBEX_ORG_ID  = (recommended) customer org id
+  WEBEX_TOKEN   = admin OAuth token (identity:groups_read, identity:groups_write, spark-admin:people_read)
+  WEBEX_ORG_ID  = target customer org UUID (36-char UUID; recommended for partner admins)
   WEBEX_BASE    = https://webexapis.com  (FedRAMP: https://api-usgov.webex.com)
 
 TLS (optional):
   REQUESTS_CA_BUNDLE or SSL_CERT_FILE = path to PEM bundle
   WEBEX_VERIFY=false  -> temporarily disable TLS verification (testing only)
+
+Debug (optional):
+  WEBEX_DEBUG=true -> print request URLs/params before calls
 """
 
 import os
@@ -31,6 +29,8 @@ import sys
 import csv
 import time
 import json
+import base64
+import re
 import traceback
 import requests
 from typing import Dict, Any, Optional, Tuple, List
@@ -39,8 +39,9 @@ from urllib.parse import quote
 # -------------------- Config --------------------
 BASE    = os.getenv("WEBEX_BASE", "https://webexapis.com").rstrip("/")
 TOKEN   = (os.getenv("WEBEX_TOKEN") or "").strip()
+# IMPORTANT: UUID form (36 chars), not Hydra/base64
 ORG_ID  = (os.getenv("WEBEX_ORG_ID") or "").strip()
-TIMEOUT = 30
+DEBUG   = (os.getenv("WEBEX_DEBUG", "false").lower() == "true")
 
 INPUT_CSV = "group_members.csv"
 LOG_CSV   = "groupMemberACDLog.csv"
@@ -50,7 +51,10 @@ CA_BUNDLE = os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("SSL_CERT_FILE")
 VERIFY_TLS = CA_BUNDLE if CA_BUNDLE else (os.getenv("WEBEX_VERIFY", "true").lower() != "false")
 print(f"[TLS] verify={VERIFY_TLS if isinstance(VERIFY_TLS, bool) else 'file:' + VERIFY_TLS}", flush=True)
 
-# -------------- HTTP helpers / retry ------------
+# Timeouts & Retry
+TIMEOUT = 30  # seconds
+
+# -------------- Helpers / exit ------------------
 def die(msg: str) -> None:
     print(f"ERROR: {msg}", flush=True)
     sys.exit(1)
@@ -63,11 +67,21 @@ def hdrs(json_ct: bool = True) -> Dict[str, str]:
         h["Content-Type"] = "application/json"
     return h
 
+def dbg(*args):
+    if DEBUG:
+        print("DEBUG:", *args, flush=True)
+
+# -------------- HTTP with backoff --------------
 def backoff_request(method: str, url: str, **kwargs) -> requests.Response:
     backoff = 1.0
     kwargs.setdefault("verify", VERIFY_TLS)
-    for _ in range(6):
-        r = requests.request(method, url, timeout=TIMEOUT, **kwargs)
+    kwargs.setdefault("timeout", TIMEOUT)
+    for attempt in range(6):
+        if DEBUG:
+            p = kwargs.get("params")
+            d = kwargs.get("data")
+            print(f"DEBUG {method} {url} params={p} data={d}", flush=True)
+        r = requests.request(method, url, **kwargs)
         if r.status_code in (429, 502, 503, 504):
             wait = float(r.headers.get("Retry-After", backoff))
             time.sleep(min(wait, 10.0))
@@ -76,18 +90,60 @@ def backoff_request(method: str, url: str, **kwargs) -> requests.Response:
         return r
     return r
 
-# ---------------- Utilities / Group helpers ----------------
+# --------- Hydra/ID utils ----------------------
+def _b64url_decode(s: str) -> Optional[str]:
+    try:
+        pad = "=" * ((4 - len(s) % 4) % 4)
+        raw = base64.b64decode(s.replace("-", "+").replace("_", "/") + pad)
+        return raw.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+def hydra_group_org_uuid(group_hydra_id: str) -> Optional[str]:
+    """
+    Hydra group id (Y2lz...) decodes to:
+      ciscospark://us/SCIM_GROUP/<group-uuid>:<org-uuid>
+    Return the <org-uuid> (lowercase) if present.
+    """
+    if not group_hydra_id:
+        return None
+    decoded = _b64url_decode(group_hydra_id)
+    if not decoded:
+        return None
+    m = re.search(r"/SCIM_GROUP/([0-9a-fA-F-]{36}):([0-9a-fA-F-]{36})$", decoded)
+    if m:
+        return m.group(2).lower()
+    m = re.search(r"/GROUP/([0-9a-fA-F-]{36}):([0-9a-fA-F-]{36})$", decoded)
+    if m:
+        return m.group(2).lower()
+    return None
+
+def hydra_person_org_uuid(person_hydra_org_id: str) -> Optional[str]:
+    """
+    Decode person orgId Hydra (Y2lz...) -> .../ORGANIZATION/<org-uuid>, return <org-uuid>.
+    """
+    if not person_hydra_org_id:
+        return None
+    decoded = _b64url_decode(person_hydra_org_id)
+    if not decoded:
+        return None
+    parts = decoded.split("/")
+    tail = parts[-1] if parts else ""
+    return tail.lower() if len(tail) == 36 else None
+
+# --------- ID normalization (paths expect Hydra) --------
 def normalize_group_id(group_id: str) -> str:
     """
-    Identity sometimes returns a composite id like:
-    Y2lz.../SCIM_GROUP/<uuid>:<orgId>
-    For member operations, use ONLY the opaque id before the colon.
+    Keep Hydra id intact for member operations (path segments).
+    If a composite form were ever present, strip only the rightmost :<org-uuid>.
+    (Hydra ids typically have no colon, so this is a no-op.)
     """
     if not group_id:
         return group_id
-    parts = group_id.split(":")
-    return parts[0] if len(parts) > 1 else group_id
+    head, sep, tail = group_id.rpartition(":")
+    return head if sep and len(tail) == 36 else group_id
 
+# ---------------- Groups ------------------------
 def get_group(group_id: str) -> Optional[Dict[str, Any]]:
     gid = normalize_group_id(group_id)
     url = f"{BASE}/v1/groups/{quote(gid, safe='')}"
@@ -108,16 +164,14 @@ def group_is_writable(group_id: str) -> Tuple[bool, str]:
         return (False, f"group source is '{src}' (directory/SCIM-synced); membership is read-only")
     return (True, "ok")
 
-# ---------------- People helpers --------------------
+# ---------------- People ------------------------
 _PERSON_EMAIL_CACHE: Dict[str, str] = {}
 
 def resolve_person(person_id: Optional[str], email: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """
     Return (personId, email). If personId missing but email present, lookup by email.
-    Read-only; does not modify user profiles.
     """
     if person_id:
-        # Best-effort: fill email from cache if missing (optional)
         if not email and person_id in _PERSON_EMAIL_CACHE:
             email = _PERSON_EMAIL_CACHE[person_id]
         return (person_id, email)
@@ -139,7 +193,14 @@ def resolve_person(person_id: Optional[str], email: Optional[str]) -> Tuple[Opti
             return (pid, found_email)
     return (None, email)
 
-# ---------- Group membership helpers ----------
+def get_person_org_uuid(person_id: str) -> Optional[str]:
+    r = backoff_request("GET", f"{BASE}/v1/people/{quote(person_id, safe='')}", headers=hdrs(False))
+    if r.status_code == 200:
+        hydra_org = (r.json().get("orgId") or "").strip()
+        return hydra_person_org_uuid(hydra_org)
+    return None
+
+# ---------- Group membership helpers ------------
 def is_member(group_id: str, person_id: str) -> bool:
     gid = normalize_group_id(group_id)
     params = {"itemsPerPage": 200, "startIndex": 1}
@@ -239,7 +300,7 @@ def main() -> List[Dict[str, Any]]:
 
     for i, row in enumerate(rows, 1):
         group_id_raw = (row.get("groupId") or "").strip()
-        group_id     = normalize_group_id(group_id_raw)
+        group_id     = normalize_group_id(group_id_raw)  # hydra path id
         group_name   = (row.get("groupName") or "").strip()
         person_id    = (row.get("personId") or "").strip()
         display      = (row.get("displayName") or "").strip()
@@ -252,7 +313,7 @@ def main() -> List[Dict[str, Any]]:
             msg = f"[{i}] 🔎 No action — {group_name or group_id} | {display or person_id} <{email}>"
             print(msg, flush=True)
             ops.append({
-                "row": i, "action": "(none)", "groupId": group_id, "groupName": group_name,
+                "row": i, "action": "(none)", "groupId": group_id_raw or group_id, "groupName": group_name,
                 "personId": person_id, "displayName": display, "email": email,
                 "result": "noop", "detail": "no action (blank)"
             })
@@ -262,7 +323,7 @@ def main() -> List[Dict[str, Any]]:
         if action not in ("a", "d"):
             print(f"[{i}] ⚠️ Invalid action '{action_raw}' — expected A/D or blank", flush=True)
             ops.append({
-                "row": i, "action": action_raw, "groupId": group_id, "groupName": group_name,
+                "row": i, "action": action_raw, "groupId": group_id_raw or group_id, "groupName": group_name,
                 "personId": person_id, "displayName": display, "email": email,
                 "result": "skip", "detail": "invalid action (use A/D or blank)"
             })
@@ -273,45 +334,56 @@ def main() -> List[Dict[str, Any]]:
         person_id = pid or person_id
         email     = resolved_email or email
 
-        # ---------- Add ----------
+        # ---------- Pre-check org alignment ----------
+        # Derive group org UUID by decoding the Hydra groupId (CSV value)
+        group_org_uuid = hydra_group_org_uuid(group_id_raw) or (ORG_ID or "")
+        person_org_uuid = get_person_org_uuid(person_id) if person_id else None
+
         if action == "a":
             if not group_id or not person_id:
                 print(f"[{i}] ❌ Add requires groupId and personId/email", flush=True)
                 ops.append({
-                    "row": i, "action": "A", "groupId": group_id, "groupName": group_name,
+                    "row": i, "action": "A", "groupId": group_id_raw or group_id, "groupName": group_name,
                     "personId": person_id, "displayName": display, "email": email,
                     "result": "error", "detail": "groupId and personId/email required"
                 })
                 continue
 
-            ok, detail = add_member(group_id, person_id)
+            if group_org_uuid and person_org_uuid and group_org_uuid != person_org_uuid:
+                detail = f"cross-org: person org {person_org_uuid} != group org {group_org_uuid}"
+                print(f"[{i}] ❌ Add blocked — {detail}", flush=True)
+                ops.append({
+                    "row": i, "action": "A", "groupId": group_id_raw or group_id, "groupName": group_name,
+                    "personId": person_id, "displayName": display, "email": email,
+                    "result": "error", "detail": detail
+                })
+                continue
+
+            ok, detail = add_member(group_id_raw or group_id, person_id)
             status = "ok" if ok else "error"
             print(f"[{i}] ➕ Add | {group_name or group_id} ← {email or person_id}: {detail}", flush=True)
-
             ops.append({
-                "row": i, "action": "A", "groupId": group_id, "groupName": group_name,
+                "row": i, "action": "A", "groupId": group_id_raw or group_id, "groupName": group_name,
                 "personId": person_id, "displayName": display, "email": email,
                 "result": status, "detail": detail
             })
             continue
 
-        # ---------- Delete ----------
         if action == "d":
             if not group_id or not person_id:
                 print(f"[{i}] ❌ Delete requires groupId and personId/email", flush=True)
                 ops.append({
-                    "row": i, "action": "D", "groupId": group_id, "groupName": group_name,
+                    "row": i, "action": "D", "groupId": group_id_raw or group_id, "groupName": group_name,
                     "personId": person_id, "displayName": display, "email": email,
                     "result": "error", "detail": "groupId and personId/email required"
                 })
                 continue
 
-            ok, detail = delete_member(group_id, person_id)
+            ok, detail = delete_member(group_id_raw or group_id, person_id)
             status = "ok" if ok else "error"
             print(f"[{i}] ➖ Del | {group_name or group_id} × {email or person_id}: {detail}", flush=True)
-
             ops.append({
-                "row": i, "action": "D", "groupId": group_id, "groupName": group_name,
+                "row": i, "action": "D", "groupId": group_id_raw or group_id, "groupName": group_name,
                 "personId": person_id, "displayName": display, "email": email,
                 "result": status, "detail": detail
             })
