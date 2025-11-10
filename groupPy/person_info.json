@@ -1,0 +1,48 @@
+{
+    "notFoundIds": null,
+    "items": [
+        {
+            "id": "Y2lzY29zcGFyazovL3VzL1BFT1BMRS9kNWVhZDI4My1hYmMyLTQ2NWUtOTdmMy1kZmNlYmIzODhmOGI",
+            "emails": [
+                "wxcc1@afni.com"
+            ],
+            "phoneNumbers": [
+                {
+                    "type": "work_extension",
+                    "value": "9174685",
+                    "primary": true
+                },
+                {
+                    "type": "work",
+                    "value": "+15209174685",
+                    "primary": true
+                }
+            ],
+            "displayName": "WxCC1",
+            "nickName": "WxCC1",
+            "lastName": "WxCC1",
+            "orgId": "Y2lzY29zcGFyazovL3VzL09SR0FOSVpBVElPTi9lYmMzMTY0Ni1iYzI2LTRhMjAtODUwMC1jMzAzMGViZDZhNTI",
+            "roles": [],
+            "licenses": [
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkZUTV9mNWZkZTM1Zi00NzA0LTQ2MGEtODEwZi00YzVkMzUyNDFlNjk",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkNFXzEyM2UzNTY2LTVlMDYtNGJmMy04NDQ5LTFhYjUxYTFkMWNlMw",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkJDU1REXzJkNjVhYzVmLWE4MDktNDViNi04MjRmLWRhMDZlYTg2ZWYzNA",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOldYU0ZSRUVfOTMxNGE3NmYtNjJiZC00Y2ZmLWE0ZmItYTViMzNjNGEyNmQxX2Fmbmkud2ViZXguY29t",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkZNU185ZWNhNzgxNC0zMzEzLTQ2NGYtOTY0Mi0wMjM5ODc1YmM5Zjg",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkVFXzQwZWQ1NmUwLTMwNmItNDMyYy1hNzdjLWZjOGEzNTdhNGFkZl9hZm5pLndlYmV4LmNvbQ",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkZTU18xYjcyOGZmOS03ZGU4LTRjYjctOTU0MC0yOTMyMGI1YTQyY2I",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkNGX2Q0OTllZWE5LWI2ZDUtNGE1Yi05MDIxLTJjNmIzZGQ2Y2YzZQ",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkNKUFBSTV9iOTlmMjhjOS1hN2I3LTRmYjgtYmJkYS1iYzBlNDMyZTExYTI",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOkZUQ19hMjQ3MzgyOC1hOTgwLTQ3MmYtODE5ZC02YjljY2UwOGU5MmI",
+                "Y2lzY29zcGFyazovL3VzL0xJQ0VOU0UvZWJjMzE2NDYtYmMyNi00YTIwLTg1MDAtYzMwMzBlYmQ2YTUyOk1TXzg1NGNlOGM5LTY3N2UtNDAxYy1hYzYyLWE2OGUwZTBiMzg1Mw"
+            ],
+            "created": "2025-04-29T16:42:19.605Z",
+            "lastModified": "2025-10-29T20:56:13.860Z",
+            "lastActivity": "2025-10-30T15:00:15.446Z",
+            "status": "inactive",
+            "invitePending": false,
+            "loginEnabled": true,
+            "type": "person"
+        }
+    ]
+}
